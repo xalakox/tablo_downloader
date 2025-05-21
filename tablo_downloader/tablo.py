@@ -6,7 +6,6 @@ import logging
 import os
 import pprint
 import subprocess
-import sys
 import tempfile
 
 from tablo_downloader import apis
@@ -34,17 +33,20 @@ def load_settings():
     return settings
 
 
-def load_recordings_db():
+def load_recordings_db(rfile):
     recordings = {}
-    rfile = os.path.join(os.path.expanduser("~"), DATABASE_FILE)
     if os.path.exists(rfile) and os.path.getsize(rfile) > 0:
         with open(rfile) as f:
             recordings = json.load(f)
     return recordings
 
 
-def save_recordings_db(recordings):
-    recordings_file = os.path.join(os.path.expanduser("~"), DATABASE_FILE)
+def save_recordings_db(recordings, recordings_file):
+    # Ensure the directory exists
+    directory = os.path.dirname(recordings_file)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+        
     with open(recordings_file, 'w') as f:
         f.write(json.dumps(recordings))
 
@@ -146,8 +148,8 @@ def title_and_filename(summary):
 def download_recording(args):
     ip = args.tablo_ips.split(',')[0]
     recording_id = args.recording_id
-
-    recordings = load_recordings_db()
+    
+    recordings = load_recordings_db(args.database_folder)
     if not recordings:
         LOGGER.error('No recordings database. Run with --updatedb to create.')
         return
@@ -222,7 +224,7 @@ def download_recording(args):
 
 
 def create_or_update_recordings_database(args):
-    recordings_by_ip = load_recordings_db()
+    recordings_by_ip = load_recordings_db(args.database_folder)
     tablo_ips = {ip for ip in recordings_by_ip}
     if args.tablo_ips:
         tablo_ips |= {x for x in args.tablo_ips.split(',') if x}
@@ -248,7 +250,7 @@ def create_or_update_recordings_database(args):
                 LOGGER.info('Getting metadata for new recording [%s]', recording)
                 recordings_by_ip[ip][recording] = recording_metadata(
                     ip, recording)
-    save_recordings_db(recordings_by_ip)
+    save_recordings_db(recordings_by_ip, args.database_folder)
 
 
 def truncate_string(s, length):
@@ -348,6 +350,11 @@ def parse_args_and_settings():
         action='store_true',
         help='Delete Tablo recordings after successfully downloading them',
     )
+    parser.add_argument(
+        '--database_folder',
+        default=os.path.join(os.path.expanduser("~"), DATABASE_FILE),
+        help='Folder where the recordings database is stored. Defaults to home directory.',
+    )
     args = parser.parse_args()
     args_dict = vars(args)
     settings = load_settings()
@@ -375,7 +382,7 @@ def main():
                 recording_id=args.recording_id, ip=args.tablo_ips))
 
     if args.dump:
-        recordings = load_recordings_db()
+        recordings = load_recordings_db(args.database_folder)
         dump_recordings(recordings)
 
     if args.download_recording:

@@ -196,7 +196,7 @@ def download_recording(args):
         LOGGER.error(m3u_data)
         return
 
-    m3u_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
+    m3u_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.m3u')
     m3u_filename = m3u_file.name
     m3u_file.write(m3u_data)
     m3u_file.close()

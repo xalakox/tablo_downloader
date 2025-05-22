@@ -145,6 +145,32 @@ def title_and_filename(summary):
     return title, filename
 
 
+def find_recording_by_show_title(recordings, ip, show_title):
+    """Find the most recent recording that partially matches the given show title."""
+    if not recordings or not ip in recordings or not show_title:
+        return None, None
+    
+    matching_recordings = []
+    
+    for rec_id, rec_data in recordings[ip].items():
+        summary = recording_summary(rec_data)
+        title, _ = title_and_filename(summary)
+        
+        if title and show_title.lower() in title.lower():
+            # Add to matching recordings with timestamp for sorting
+            show_time = summary.get('show_time')
+            if show_time:
+                matching_recordings.append((rec_id, show_time, rec_data))
+    
+    # Sort by show_time in descending order (most recent first)
+    matching_recordings.sort(key=lambda x: x[1], reverse=True)
+    
+    if matching_recordings:
+        # Return the most recent matching recording ID and its data
+        return matching_recordings[0][0], matching_recordings[0][2]
+    
+    return None, None
+
 def download_recording(args):
     ip = args.tablo_ips.split(',')[0]
     recording_id = args.recording_id
@@ -153,12 +179,23 @@ def download_recording(args):
     if not recordings:
         LOGGER.error('No recordings database. Run with --updatedb to create.')
         return
-
-    recording = recordings.get(ip, {}).get(recording_id)
-    if not recording:
-        LOGGER.error(
-                'Recording [%s] on device [%s] not found', recording_id, ip)
-        return
+    
+    recording = None
+    
+    # If --show argument is provided, find the matching recording
+    if args.show and not recording_id:
+        LOGGER.info('Searching for most recent recording matching: %s', args.show)
+        recording_id, recording = find_recording_by_show_title(recordings, ip, args.show)
+        if not recording_id:
+            LOGGER.error('No recordings found matching show title: %s', args.show)
+            return
+        LOGGER.info('Found matching recording: %s', recording_id)
+    else:
+        recording = recordings.get(ip, {}).get(recording_id)
+        if not recording:
+            LOGGER.error(
+                    'Recording [%s] on device [%s] not found', recording_id, ip)
+            return
 
     playlist = apis.playlist_info(ip, recording_id)
     if playlist.get('error'):
@@ -311,6 +348,10 @@ def parse_args_and_settings():
         help='A Tablo recording ID',
     )
     parser.add_argument(
+        '--show',
+        help='Download the most recent recording that partially matches this show title',
+    )
+    parser.add_argument(
         '--recordings_directory',
         help='A directory to store Tablo recordings',
     )
@@ -388,7 +429,18 @@ def main():
     if args.download_recording:
         download_recording(args)
         return
-
+    
+    if args.show:
+        recordings = load_recordings_db(args.database_folder)
+        (matched_id, recording_match) = find_recording_by_show_title(
+           recordings, args.tablo_ips, args.show 
+        )
+        if (not matched_id):
+            LOGGER.error('No recordings found matching show title: %s', args.show)
+            return
+        LOGGER.info('Found matching recording: %s', matched_id)
+        args.recording_id = matched_id
+        download_recording(args)
 
 if __name__ == '__main__':
     main()

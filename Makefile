@@ -1,16 +1,16 @@
-# Original local commands
-updatedb:
-	python3 -m tablo_downloader.tablo --tablo_ips 192.168.86.61 --updatedb --database_folder ./data/tablo.db
-
-dump:
-	python3 -m tablo_downloader.tablo --tablo_ips 192.168.86.61 --dump
-
-download:
-	python3 -m tablo_downloader.tablo --download_recording --recording_id /recordings/series/episodes/4011394 --recordings_directory ./data/recordings --tablo_ips 192.168.86.61 --overwrite -v
-
 # Load environment variables from .env file if it exists
 -include .env
 export
+
+# Local (non-Docker) commands
+updatedb:
+	python3 -m tablo_downloader.tablo --tablo_ips $(TABLO_IPS) --updatedb --database_folder ./data/tablo.db
+
+dump:
+	python3 -m tablo_downloader.tablo --tablo_ips $(TABLO_IPS) --dump
+
+download:
+	python3 -m tablo_downloader.tablo --download_recording --recording_id /recordings/series/episodes/4011394 --recordings_directory ./data/recordings --tablo_ips $(TABLO_IPS) --overwrite -v
 
 # Docker settings
 DOCKER_IMAGE_NAME ?= tablo-downloader-app

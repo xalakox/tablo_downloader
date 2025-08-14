@@ -102,6 +102,67 @@ class PutIOUploader:
             logger.error(f"Error uploading {filepath}: {e}")
             return False
     
+    def upload_newest(self, directory: Path, dry_run: bool = False) -> Dict[str, List[str]]:
+        """
+        Upload only the newest video file from a directory if it hasn't been uploaded yet.
+        
+        Args:
+            directory: Directory containing video files
+            dry_run: If True, only show what would be uploaded without actually uploading
+        
+        Returns:
+            Dictionary with 'uploaded', 'skipped', and 'failed' lists
+        """
+        results = {
+            'uploaded': [],
+            'skipped': [],
+            'failed': []
+        }
+        
+        if not directory.exists():
+            logger.error(f"Directory does not exist: {directory}")
+            return results
+        
+        # Find all video files
+        video_files = []
+        for filepath in directory.iterdir():
+            if filepath.is_file() and self._is_video_file(filepath):
+                video_files.append(filepath)
+        
+        if not video_files:
+            logger.info(f"No video files found in {directory}")
+            return results
+        
+        # Sort by modification time, newest first
+        video_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        newest_file = video_files[0]
+        
+        logger.info(f"Found {len(video_files)} video files. Newest: {newest_file.name}")
+        
+        rel_path = str(newest_file.relative_to(directory))
+        
+        # Check if already uploaded
+        if rel_path in self.uploaded_files:
+            logger.info(f"Newest file already uploaded: {newest_file.name}")
+            results['skipped'].append(rel_path)
+            return results
+        
+        if dry_run:
+            logger.info(f"Would upload newest file: {newest_file.name}")
+            results['uploaded'].append(rel_path)
+        else:
+            # Actually upload the file
+            if self.upload_file(newest_file):
+                self.uploaded_files.add(rel_path)
+                self._save_upload_db()
+                results['uploaded'].append(rel_path)
+                logger.info(f"Successfully uploaded newest file: {newest_file.name}")
+            else:
+                results['failed'].append(rel_path)
+                logger.error(f"Failed to upload newest file: {newest_file.name}")
+        
+        return results
+    
     def upload_directory(self, directory: Path, dry_run: bool = False) -> Dict[str, List[str]]:
         """
         Upload all video files from a directory that haven't been uploaded yet.
@@ -163,6 +224,8 @@ def main():
                         help='Directory containing recordings (default: /data/recordings)')
     parser.add_argument('--db-path', default='/data/putio_uploads.json',
                         help='Path to upload tracking database (default: /data/putio_uploads.json)')
+    parser.add_argument('--newest-only', action='store_true',
+                        help='Upload only the newest video file (if not already uploaded)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be uploaded without actually uploading')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -185,7 +248,11 @@ def main():
     if args.dry_run:
         logger.info("DRY RUN MODE - No files will actually be uploaded")
     
-    results = uploader.upload_directory(recordings_dir, dry_run=args.dry_run)
+    if args.newest_only:
+        logger.info("Uploading only the newest video file")
+        results = uploader.upload_newest(recordings_dir, dry_run=args.dry_run)
+    else:
+        results = uploader.upload_directory(recordings_dir, dry_run=args.dry_run)
     
     # Print summary
     print("\n=== Upload Summary ===")

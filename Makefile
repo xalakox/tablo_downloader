@@ -34,7 +34,7 @@ DOCKER_RUN_OPTS = -it --rm \
 	-e SHOW_MATCH="$(SHOW_MATCH)" \
 	-e DEBUG="$(DEBUG)"
 
-.PHONY: all docker-build docker-shell docker-updatedb docker-dump docker-download-latest ensure-data-dir
+.PHONY: all docker-build docker-shell docker-updatedb docker-dump docker-download-latest docker-upload-putio docker-upload-putio-newest ensure-data-dir
 
 all: docker-build
 
@@ -95,3 +95,19 @@ docker-upload-putio: docker-build ensure-data-dir
 		--token "$(PUTIO_TOKEN)" \
 		--recordings-dir /data/recordings \
 		--db-path /data/putio_uploads.json -v
+
+docker-upload-putio-newest: docker-build ensure-data-dir
+	@echo "Uploading newest recording to put.io via Docker... Local ./data mounted to /data."
+	@if [ -z "$(PUTIO_TOKEN)" ]; then \
+		echo "Error: PUTIO_TOKEN environment variable is not set."; \
+		echo "Usage: make docker-upload-putio-newest PUTIO_TOKEN=\"your-putio-oauth-token\""; \
+		echo "Get your token from: https://app.put.io/account/api"; \
+		exit 1; \
+	fi
+	@echo "Uploading newest file from ./data/recordings to put.io (if not already uploaded)..."
+	docker run --rm -v "$(LOCAL_DATA_DIR):/data" -e PUTIO_TOKEN="$(PUTIO_TOKEN)" $(DOCKER_IMAGE_NAME):$(DOCKER_TAG) \
+		python3 -m tablo_downloader.putio_uploader \
+		--token "$(PUTIO_TOKEN)" \
+		--recordings-dir /data/recordings \
+		--db-path /data/putio_uploads.json \
+		--newest-only -v

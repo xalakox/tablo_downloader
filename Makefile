@@ -16,6 +16,14 @@ download:
 DOCKER_IMAGE_NAME ?= tablo-downloader-app
 DOCKER_TAG ?= latest
 LOCAL_DATA_DIR := $(CURDIR)/data
+TAILSCALE_IMAGE ?= tailscale/tailscale:latest
+TAILSCALE_CONTAINER_NAME ?= tablo-tailscale
+TAILSCALE_STATE_DIR := $(LOCAL_DATA_DIR)/tailscale
+TS_EXTRA_ARGS ?= --accept-routes
+TS_UP_RESET ?= true
+TAILSCALE_WAIT_SECS ?= 60
+TS_TUN ?= tailscale0
+TAILSCALED_ARGS ?= --statedir=/var/lib/tailscale --socket=/var/run/tailscale/tailscaled.sock --tun=$(TS_TUN)
 
 # Default values if not set in .env
 TABLO_IPS ?= 192.168.1.100
@@ -79,7 +87,49 @@ docker-download-latest: docker-build ensure-data-dir
 	@echo "Using SHOW_MATCH=$(SHOW_MATCH)"
 	@echo "Using TABLO_IPS=$(TABLO_IPS)"
 	# entrypoint.sh will run updatedb, then download-latest because SHOW_MATCH is set.
-	docker run $(DOCKER_RUN_OPTS) $(DOCKER_IMAGE_NAME):$(DOCKER_TAG)
+	@set -e; \
+	NETWORK_OPTS=""; \
+	CLEANUP_TS=0; \
+	if [ -n "$(TS_AUTHKEY)" ]; then \
+		trap 'if [ $$CLEANUP_TS -eq 1 ]; then docker rm -f $(TAILSCALE_CONTAINER_NAME) >/dev/null 2>&1 || true; fi' EXIT; \
+		echo "TS_AUTHKEY provided; starting Tailscale sidecar $(TAILSCALE_CONTAINER_NAME) for network access..."; \
+		mkdir -p "$(TAILSCALE_STATE_DIR)"; \
+		docker rm -f $(TAILSCALE_CONTAINER_NAME) >/dev/null 2>&1 || true; \
+		docker run -d --name $(TAILSCALE_CONTAINER_NAME) --hostname $(TAILSCALE_CONTAINER_NAME) \
+			--cap-add=NET_ADMIN --cap-add=NET_RAW --device /dev/net/tun \
+			-e TS_AUTHKEY="$(TS_AUTHKEY)" \
+			-e TS_STATE_DIR="/var/lib/tailscale" \
+			-e TS_EXTRA_ARGS="$(TS_EXTRA_ARGS)" \
+			-e TS_TUN="$(TS_TUN)" \
+			-v "$(TAILSCALE_STATE_DIR):/var/lib/tailscale" \
+			$(TAILSCALE_IMAGE) tailscaled $(TAILSCALED_ARGS); \
+			echo "Bringing Tailscale up (authenticating with TS_AUTHKEY)..."; \
+			RESET_ARG=""; \
+			if [ "$(TS_UP_RESET)" = "true" ]; then RESET_ARG="--reset"; fi; \
+			if ! docker exec $(TAILSCALE_CONTAINER_NAME) tailscale up $$RESET_ARG --authkey "$(TS_AUTHKEY)" $(TS_EXTRA_ARGS); then \
+				echo "tailscale up failed; showing logs."; \
+				docker logs $(TAILSCALE_CONTAINER_NAME) || true; \
+				docker rm -f $(TAILSCALE_CONTAINER_NAME) >/dev/null 2>&1 || true; \
+				exit 1; \
+			fi; \
+			echo "Waiting for Tailscale to be ready (up to $(TAILSCALE_WAIT_SECS)s)..."; \
+			for i in $$(seq 1 $(TAILSCALE_WAIT_SECS)); do \
+				if docker exec $(TAILSCALE_CONTAINER_NAME) tailscale status >/dev/null 2>&1; then \
+					NETWORK_OPTS="--network=container:$(TAILSCALE_CONTAINER_NAME)"; \
+					break; \
+				fi; \
+				sleep 2; \
+			done; \
+		if [ -z "$$NETWORK_OPTS" ]; then \
+			echo "Tailscale did not come up successfully; showing logs."; \
+			docker logs $(TAILSCALE_CONTAINER_NAME) || true; \
+			docker rm -f $(TAILSCALE_CONTAINER_NAME) >/dev/null 2>&1 || true; \
+			exit 1; \
+		fi; \
+		CLEANUP_TS=1; \
+	fi; \
+	docker run $(DOCKER_RUN_OPTS) $$NETWORK_OPTS $(DOCKER_IMAGE_NAME):$(DOCKER_TAG); \
+	if [ $$CLEANUP_TS -eq 1 ]; then docker rm -f $(TAILSCALE_CONTAINER_NAME) >/dev/null 2>&1 || true; fi
 
 docker-upload-putio: docker-build ensure-data-dir
 	@echo "Uploading recordings to put.io via Docker... Local ./data mounted to /data."

@@ -35,6 +35,7 @@ make docker-updatedb
 ```bash
 make docker-download-latest SHOW_MATCH="Show Name"
 ```
+If your Tablo is only reachable via Tailscale, set `TS_AUTHKEY` in `.env` and this target will bring up a Tailscale sidecar automatically.
 
 #### Upload recordings to Put.io
 ```bash
@@ -59,6 +60,12 @@ Configure these variables:
 - `SHOW_MATCH`: Show title to match for downloading (optional)
 - `PUTIO_TOKEN`: Your Put.io OAuth token (get from https://app.put.io/account/api)
 - `DEBUG`: Set to "true" for verbose logging
+- `TS_AUTHKEY`: Optional Tailscale auth key; when set, `docker-download-latest` will run through a Tailscale sidecar for Tablo access
+- `TS_EXTRA_ARGS`: Extra flags passed to `tailscale up` (defaults to `--accept-routes` so subnet routes are used)
+- `TS_UP_RESET`: Whether to pass `--reset` to `tailscale up` to clear prior non-default settings (default: true)
+- `TS_TUN`: Tailscale tun mode (default: `tailscale0` for kernel routing; if you set userspace networking, the downloader will not get Tailscale routes)
+- `TAILSCALED_ARGS`: Override args for `tailscaled` (default: `--statedir=/var/lib/tailscale --socket=/var/run/tailscale/tailscaled.sock --tun=$(TS_TUN)`)
+- `TAILSCALE_WAIT_SECS`: How long to wait for the Tailscale sidecar to become ready (default: 60)
 
 ### Data Storage
 - Database: `./data/tablo.db`
@@ -107,4 +114,3 @@ IPs of your Tablo device(s) automatically.
 - Local discovery may not work if connected to a VPN.
 - The Docker version includes all dependencies and is the recommended way to run.
 - Put.io uploader tracks uploaded files to avoid duplicates.
-

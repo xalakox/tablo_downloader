@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 from tablo_downloader import apis
+from tablo_downloader.validation import validate_video_file, validate_video_file_detailed
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
@@ -171,6 +172,39 @@ def find_recording_by_show_title(recordings, ip, show_title):
     
     return None, None
 
+
+def validate_existing_downloads(args):
+    """Validate all existing downloaded files in the recordings directory."""
+    recordings_dir = args.recordings_directory
+    if not recordings_dir or not os.path.exists(recordings_dir):
+        LOGGER.error('Recordings directory does not exist: %s', recordings_dir)
+        return
+
+    results = {'valid': 0, 'invalid': 0, 'errors': 0}
+
+    for filename in sorted(os.listdir(recordings_dir)):
+        if not filename.endswith('.mp4'):
+            continue
+
+        filepath = os.path.join(recordings_dir, filename)
+        try:
+            is_valid, reason = validate_video_file(filepath)
+            if is_valid:
+                results['valid'] += 1
+                LOGGER.info('VALID: %s - %s', filename, reason)
+            else:
+                results['invalid'] += 1
+                LOGGER.warning('INVALID: %s - %s', filename, reason)
+        except Exception as e:
+            results['errors'] += 1
+            LOGGER.error('ERROR validating %s: %s', filename, e)
+
+    print(f"\n=== Validation Summary ===")
+    print(f"Valid: {results['valid']}")
+    print(f"Invalid: {results['invalid']}")
+    print(f"Errors: {results['errors']}")
+
+
 def download_recording(args):
     ip = args.tablo_ips.split(',')[0]
     recording_id = args.recording_id
@@ -202,6 +236,11 @@ def download_recording(args):
         LOGGER.error('Recording [%s] on device [%s] failed', recording_id, ip)
         return
 
+    # Get expected duration from recording metadata for validation
+    expected_duration = recording.get('details', {}).get('video_details', {}).get('duration')
+    if expected_duration:
+        LOGGER.debug('Expected recording duration: %s seconds', expected_duration)
+
     title, filename = title_and_filename(recording_summary(recording))
     if not title:
         LOGGER.error('Unable to generate title for recording [%s] on '
@@ -225,10 +264,46 @@ def download_recording(args):
     if os.path.exists(mp4_filename):
         if args.overwrite:
             os.remove(mp4_filename)
+            LOGGER.info('Removed existing file for re-download: %s', mp4_filename)
         else:
-            LOGGER.info('Cannot create destination [%s] exists.',
-                        mp4_filename)
-            return
+            # Validate existing file before skipping
+            validation = validate_video_file_detailed(
+                mp4_filename,
+                expected_duration=expected_duration
+            )
+
+            if not validation['is_valid']:
+                # File is corrupted or too small - delete and re-download
+                LOGGER.warning('Existing download is corrupted: %s - %s',
+                               mp4_filename, validation['reason'])
+                os.remove(mp4_filename)
+                LOGGER.info('Removed corrupted file for re-download')
+            elif validation['deviation'] is None or validation['deviation'] <= 0.10:
+                # No expected duration or within 10% tolerance - keep file
+                LOGGER.info('Existing download is valid, skipping: %s - %s',
+                            mp4_filename, validation['reason'])
+                return
+            elif validation['deviation'] > 0.50:
+                # More than 50% deviation - clearly incomplete, auto-delete
+                LOGGER.warning('Existing download is incomplete (>50%% deviation): %s - %s',
+                               mp4_filename, validation['reason'])
+                os.remove(mp4_filename)
+                LOGGER.info('Removed incomplete file for re-download')
+            else:
+                # 10-50% deviation - ask user (might be different episode)
+                LOGGER.warning('Existing file has duration mismatch: %s', validation['reason'])
+                print(f"\nFile exists: {mp4_filename}")
+                print(f"  Actual duration:   {validation['actual_duration']:.1f}s")
+                print(f"  Expected duration: {validation['expected_duration']:.1f}s")
+                print(f"  Deviation: {validation['deviation']:.1%}")
+                print("\nThis could be a different episode or an incomplete download.")
+                response = input("Delete and re-download? [y/N]: ").strip().lower()
+                if response == 'y':
+                    os.remove(mp4_filename)
+                    LOGGER.info('Removed file for re-download per user request')
+                else:
+                    LOGGER.info('Keeping existing file per user request')
+                    return
 
     m3u_data = apis.playlist_m3u(playlist)
     if not isinstance(m3u_data, str):  # Some error occurred.
@@ -242,22 +317,42 @@ def download_recording(args):
 
     cmd = [
         'ffmpeg', '-hide_banner', '-loglevel', 'warning',
-        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto', '-i',
-        m3u_filename, '-c', 'copy', '-metadata', f'title={title}',
+        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+        '-i', m3u_filename,
+        '-c', 'copy',
+        '-metadata', f'title={title}',
         mp4_filename
     ]
     LOGGER.debug('Running [%s]', ' '.join(cmd))
 
     status = subprocess.run(cmd)
-    if status.returncode == 0:
-        LOGGER.info('Successfully Downloaded [%s]', mp4_filename)
-        if args.delete_originals_after_downloading:
-            LOGGER.info('Deleting Tablo recording [%s] on device [%s]',
-                        recording_id, ip)
-            apis.delete_recording(ip, recording_id)
-    else:
-        LOGGER.info('Failed to download [%s]', mp4_filename)
     os.remove(m3u_filename)
+
+    if status.returncode == 0:
+        # Validate the downloaded file
+        is_valid, reason = validate_video_file(
+            mp4_filename,
+            expected_duration=expected_duration
+        )
+        if is_valid:
+            LOGGER.info('Successfully Downloaded and Validated [%s] - %s',
+                        mp4_filename, reason)
+            if args.delete_originals_after_downloading:
+                LOGGER.info('Deleting Tablo recording [%s] on device [%s]',
+                            recording_id, ip)
+                apis.delete_recording(ip, recording_id)
+        else:
+            LOGGER.error('Download completed but validation failed: %s - %s',
+                         mp4_filename, reason)
+            os.remove(mp4_filename)
+            LOGGER.info('Removed invalid download')
+    else:
+        LOGGER.error('FFmpeg failed with return code %d for [%s]',
+                     status.returncode, mp4_filename)
+        # Clean up partial file if it exists
+        if os.path.exists(mp4_filename):
+            os.remove(mp4_filename)
+            LOGGER.info('Removed partial download after FFmpeg failure')
 
 
 def create_or_update_recordings_database(args):
@@ -396,6 +491,11 @@ def parse_args_and_settings():
         default=os.path.join(os.path.expanduser("~"), DATABASE_FILE),
         help='Folder where the recordings database is stored. Defaults to home directory.',
     )
+    parser.add_argument(
+        '--validate_existing',
+        action='store_true',
+        help='Validate existing downloaded files and report their status.',
+    )
     args = parser.parse_args()
     args_dict = vars(args)
     settings = load_settings()
@@ -425,6 +525,10 @@ def main():
     if args.dump:
         recordings = load_recordings_db(args.database_folder)
         dump_recordings(recordings)
+
+    if args.validate_existing:
+        validate_existing_downloads(args)
+        return
 
     if args.download_recording:
         download_recording(args)

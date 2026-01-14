@@ -278,6 +278,19 @@ def download_recording(args):
                                mp4_filename, validation['reason'])
                 os.remove(mp4_filename)
                 LOGGER.info('Removed corrupted file for re-download')
+            elif (validation['actual_duration'] is not None
+                  and expected_duration is not None
+                  and validation['actual_duration'] > expected_duration):
+                # Local file is longer than service recording - assume service has
+                # a shorter re-run. Keep the longer local copy.
+                LOGGER.info(
+                    'Existing download is longer than service recording, keeping local copy: %s '
+                    '(local: %.1fs, service: %.1fs). Service likely has a shorter re-run.',
+                    mp4_filename,
+                    validation['actual_duration'],
+                    expected_duration
+                )
+                return
             elif validation['deviation'] is None or validation['deviation'] <= 0.10:
                 # No expected duration or within 10% tolerance - keep file
                 LOGGER.info('Existing download is valid, skipping: %s - %s',
